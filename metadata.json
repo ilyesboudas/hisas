@@ -1,0 +1,6 @@
+{
+  "name": "تدوين حصص التدريس",
+  "description": "نظام متكامل ودقيق لتسجيل ومتابعة حصص التدريس الأساسية والإضافية، وحساب الأرصدة الزمنية والتصفية المالية للأساتذة والمؤسسات التعليمية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
