@@ -22,8 +22,10 @@ import {
   Receipt,
   UserCheck,
   CalendarCheck,
+  CalendarRange,
   Info,
 } from 'lucide-react';
+import { findUnrecordedSessionsAcrossRecentWeeks } from '../utils/calendarEngine.ts';
 
 interface DashboardViewProps {
   onNavigate: (tab: NavTab) => void;
@@ -65,9 +67,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   // Calculate period summary with central calculation engine
   const summary = useMemo(() => {
     return calculatePeriodSummary(
-      db.weeks,
-      db.dailyRecords,
-      db.baseSchedule,
+      db.weeks || [],
+      db.dailyRecords || [],
+      db.baseSchedule || [],
       db.settings,
       filterDates
     );
@@ -75,8 +77,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   // Check if any weeks are pending evaluation
   const unreviewedWeeks = useMemo(() => {
-    return db.weeks.filter((w) => w.status !== 'approved');
+    return (db.weeks || []).filter((w) => w.status !== 'approved');
   }, [db.weeks]);
+
+  // Find unrecorded past sessions across recent weeks
+  const unrecordedSessions = useMemo(() => {
+    return findUnrecordedSessionsAcrossRecentWeeks(
+      db.baseSchedule || [],
+      db.supportSchedule || [],
+      db.dailyRecords || [],
+      3
+    );
+  }, [db.baseSchedule, db.supportSchedule, db.dailyRecords]);
 
   return (
     <div className="space-y-6 pb-12">
@@ -185,6 +197,62 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         </div>
       )}
 
+      {/* Unrecorded Sessions Alert Widget (الحصص التي تحتاج إلى مراجعة) */}
+      {unrecordedSessions.length > 0 && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-4 sm:p-5 shadow-sm space-y-3 animate-fade-in">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-rose-200">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <AlertCircle className="w-5 h-5 animate-pulse" />
+              </div>
+              <div>
+                <h3 className="font-black text-sm sm:text-base text-rose-950">
+                  الحصص التي تحتاج إلى مراجعة وتأكيد ({unrecordedSessions.length} حصة غير مسجلة)
+                </h3>
+                <p className="text-xs text-rose-700 mt-0.5">
+                  حصص مبرمجة في جدولك الثابت انتهى موعدها ولم تسجل حالتها بعد. تذكر: الحصة غير المسجلة لا تُصنف غيابًا تلقائيًا ولا تؤثر في الرصيد حتى تحددها.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate('calendar')}
+              className="px-3.5 py-1.5 text-xs font-black bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 self-end sm:self-auto"
+            >
+              <CalendarRange className="w-3.5 h-3.5" />
+              <span>مراجعة في الرزنامة الأسبوعية</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-1">
+            {unrecordedSessions.slice(0, 6).map((session) => (
+              <div
+                key={session.id}
+                onClick={() => onNavigate('calendar')}
+                className="bg-white p-3 rounded-xl border border-rose-200 hover:border-rose-400 hover:shadow-xs transition-all cursor-pointer flex items-center justify-between gap-2 text-xs"
+              >
+                <div>
+                  <div className="font-extrabold text-slate-900 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-rose-500" />
+                    <span>{session.dayNameArabic} ({session.date})</span>
+                  </div>
+                  <div className="text-[11px] text-slate-600 font-medium mt-0.5">
+                    {session.subject} {session.groupName ? `— ${session.groupName}` : ''}
+                  </div>
+                </div>
+                <div className="text-left shrink-0">
+                  <span className="font-mono text-2xs font-bold text-slate-500 block">
+                    {session.startTime} - {session.endTime}
+                  </span>
+                  <span className="text-[10px] font-black text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-100">
+                    لم يتم التسجيل
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Main Metric Cards Grid (8 Cards as requested) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Approved Net Balance (الرصيد الصافي المعتمد) */}
@@ -228,7 +296,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
           <div className="mt-3 pt-3 border-t border-indigo-700/50 flex flex-wrap items-center justify-between gap-2 text-xs text-indigo-200">
             <div>
-              المكافئ الحصصي (55 د):{' '}
+              الرصيد المحاسبي:{' '}
               <span className="font-bold text-white text-sm">
                 {summary.formattedSessionsText}
               </span>
@@ -257,7 +325,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
             <div className="text-xs text-slate-500 mt-0.5">
               {summary.approvedRequiredReferenceMinutes} دقيقة (
-              {summary.evaluatedWeeksCount} × {db.settings.referenceWeeklyHours} ساعة)
+              {summary.evaluatedWeeksCount} أسابيع × {db.settings.referenceWeeklySessions ?? db.settings.referenceWeeklyHours ?? 16} حصة)
             </div>
           </div>
           <div className="text-xs text-slate-400 font-medium">في الأسابيع المُقيّمة والمعتمدة</div>
@@ -374,7 +442,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <h2 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
           <span>الإجراءات السريعة</span>
         </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <button
+            onClick={() => onNavigate('calendar')}
+            className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/50 hover:border-indigo-400 hover:bg-indigo-50 transition-all text-right group cursor-pointer col-span-2 sm:col-span-1"
+          >
+            <div className="w-9 h-9 rounded-lg bg-indigo-600 text-white flex items-center justify-center mb-2 group-hover:scale-105 transition-transform shadow-xs">
+              <CalendarRange className="w-5 h-5" />
+            </div>
+            <div className="font-bold text-sm text-indigo-950">الرزنامة الأسبوعية</div>
+            <div className="text-xs text-indigo-700/80 mt-0.5">مراقبة الحصص المبرمجة والمنسية</div>
+          </button>
+
           <button
             onClick={() => onNavigate('daily')}
             className="p-4 rounded-xl border border-slate-200 hover:border-indigo-400 hover:bg-indigo-50/50 transition-all text-right group cursor-pointer"

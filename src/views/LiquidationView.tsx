@@ -280,7 +280,7 @@ export const LiquidationView: React.FC = () => {
                     onChange={(e) => handleMethodChange(e.target.value as LiquidationMethod)}
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
                   >
-                    <option value="per_session">بسعر الحصة المرجعية (كل 55 د = حصة)</option>
+                    <option value="per_session">بسعر الحصة المكافئة (كل {db.settings.surplusSessionDurationMinutes || 60} د = حصة)</option>
                     <option value="per_hour">بسعر الساعة (كل 60 د = ساعة)</option>
                   </select>
                 </div>
@@ -288,7 +288,7 @@ export const LiquidationView: React.FC = () => {
                 {/* Rate */}
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    {method === 'per_session' ? 'سعر الحصة (55 دقيقة)' : 'سعر الساعة (60 دقيقة)'}
+                    {method === 'per_session' ? `سعر الحصة المكافئة (${db.settings.surplusSessionDurationMinutes || 60} دقيقة)` : 'سعر الساعة (60 دقيقة)'}
                   </label>
                   <div className="relative">
                     <input
@@ -396,7 +396,7 @@ export const LiquidationView: React.FC = () => {
 
               <div className="text-right sm:text-left text-xs text-slate-500">
                 <div>تاريخ الإصدار: {new Date().toLocaleDateString('ar-DZ')}</div>
-                <div>طريقة الحساب: {(selectedArchived ? selectedArchived.calculationMethod : method) === 'per_session' ? 'سعر الحصة (55 د)' : 'سعر الساعة (60 د)'}</div>
+                <div>طريقة الحساب: {(selectedArchived ? selectedArchived.calculationMethod : method) === 'per_session' ? `سعر الحصة المكافئة (${db.settings.surplusSessionDurationMinutes || 60} د)` : 'سعر الساعة (60 د)'}</div>
                 <div>السعر المعتمد: <span className="font-mono">{selectedArchived ? selectedArchived.rate : rate}</span> {db.settings.currency}</div>
               </div>
             </div>
@@ -535,8 +535,16 @@ export const LiquidationView: React.FC = () => {
                         </div>
 
                         <div className="text-xs text-slate-600 font-bold mt-1">
-                          المكافئ الحصصي (55 دقيقة لكل حصة): {activeSummary.equivalentSessions} حصص و{' '}
-                          {activeSummary.remainderMinutes} دقيقة متبقية
+                          {activeSummary.approvedNetMinutes < 0 ? (
+                            <span>عجز متبقي قدره {Math.abs(activeSummary.approvedNetMinutes)} دقيقة</span>
+                          ) : activeSummary.approvedNetMinutes > 0 ? (
+                            <span>
+                              المكافئ الحصصي للفائض ({db.settings.surplusSessionDurationMinutes || 60} دقيقة لكل حصة): {activeSummary.equivalentSessions} حصص و{' '}
+                              {activeSummary.remainderMinutes} دقيقة متبقية
+                            </span>
+                          ) : (
+                            <span>الرصيد متوازن تمامًا (0 دقيقة)</span>
+                          )}
                         </div>
                       </div>
 

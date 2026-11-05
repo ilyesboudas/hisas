@@ -8,6 +8,7 @@ import { useApp } from '../context/AppContext.tsx';
 import { WeekRecord, DailySessionRecord } from '../types/index.ts';
 import { calculateWeekMetrics, convertMinutesToSessions } from '../utils/calculationEngine.ts';
 import { formatDateArabic, getSaturdayOfWeek, getThursdayOfWeek } from '../utils/dateUtils.ts';
+import { resolveWeekCalendar } from '../utils/calendarEngine.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   Calendar,
@@ -37,15 +38,30 @@ export const WeeksView: React.FC = () => {
     return db.weeks
       .map((week) => {
         const metrics = calculateWeekMetrics(week, db.dailyRecords, db.baseSchedule, db.settings);
-        const conversion = convertMinutesToSessions(metrics.isApproved ? metrics.netMinutes : metrics.provisionalNetMinutes);
+        const conversion = convertMinutesToSessions(
+          metrics.isApproved ? metrics.netMinutes : metrics.provisionalNetMinutes,
+          db.settings.referenceSessionDurationMinutes || 55,
+          db.settings.surplusSessionDurationMinutes || 60
+        );
+
+        // Calculate unrecorded sessions for this week
+        const cal = resolveWeekCalendar(
+          week.startDate,
+          db.baseSchedule,
+          db.supportSchedule,
+          db.dailyRecords,
+          new Date()
+        );
+
         return {
           week,
           metrics,
           conversion,
+          unrecordedPastCount: cal.unrecordedPastCount,
         };
       })
       .sort((a, b) => b.week.startDate.localeCompare(a.week.startDate));
-  }, [db.weeks, db.dailyRecords, db.baseSchedule, db.settings]);
+  }, [db.weeks, db.dailyRecords, db.baseSchedule, db.supportSchedule, db.settings]);
 
   // Review drawer/modal records for reviewWeek
   const reviewRecords = useMemo(() => {
@@ -67,6 +83,12 @@ export const WeeksView: React.FC = () => {
       setReopenError(null);
     }
   };
+
+  const approveWeekUnrecordedCount = useMemo(() => {
+    if (!approveConfirmWeek) return 0;
+    const item = weekList.find((w) => w.week.id === approveConfirmWeek.id);
+    return item?.unrecordedPastCount || 0;
+  }, [approveConfirmWeek, weekList]);
 
   return (
     <div className="space-y-6 pb-12">
@@ -113,7 +135,7 @@ export const WeeksView: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                weekList.map(({ week, metrics, conversion }) => {
+                weekList.map(({ week, metrics, conversion, unrecordedPastCount }) => {
                   const isApproved = week.status === 'approved';
 
                   return (
@@ -160,6 +182,12 @@ export const WeeksView: React.FC = () => {
                             ? 'قيد المراجعة'
                             : 'غير مُقيّم'}
                         </span>
+                        {!isApproved && unrecordedPastCount > 0 && (
+                          <div className="text-2xs font-black text-rose-600 mt-1 flex items-center gap-1">
+                            <AlertCircle className="w-3 h-3 text-rose-500 shrink-0" />
+                            <span>{unrecordedPastCount} حصص لم تُسجل</span>
+                          </div>
+                        )}
                       </td>
 
                       {/* Programmed vs Completed Base */}
@@ -375,13 +403,17 @@ export const WeeksView: React.FC = () => {
         </div>
       )}
 
-      {/* Approve Week Confirmation */}
+      {/* Approve Week Confirmation with Unrecorded Warning */}
       <ConfirmModal
         isOpen={Boolean(approveConfirmWeek)}
-        title="تأكيد اعتماد الأسبوع"
-        message={`هل تأكدت من مراجعة جميع حصص الأسبوع [${approveConfirmWeek?.startDate} إلى ${approveConfirmWeek?.endDate}]؟ عند الاعتماد، سيتم إدخال رصيد هذا الأسبوع بصورة نهائية في الرصيد الصافي المعتمد.`}
-        confirmLabel="نعم، اعتمد الأسبوع"
-        variant="primary"
+        title={approveWeekUnrecordedCount > 0 ? 'تنبيه: حصص غير مسجلة قبل الاعتماد' : 'تأكيد اعتماد الأسبوع'}
+        message={
+          approveWeekUnrecordedCount > 0
+            ? `⚠️ تنبيه هام: يوجد ${approveWeekUnrecordedCount} حصص انتهى موعدها ولم يتم تسجيلها بعد في هذا الأسبوع [${approveConfirmWeek?.startDate} إلى ${approveConfirmWeek?.endDate}]! يُنصح بمراجعتها وتسجيل حضورها أو غيابها في «الرزنامة الأسبوعية» قبل الاعتماد. هل أنت متأكد من رغبتك في اعتماد الأسبوع الآن؟`
+            : `هل تأكدت من مراجعة جميع حصص الأسبوع [${approveConfirmWeek?.startDate} إلى ${approveConfirmWeek?.endDate}]؟ عند الاعتماد، سيتم إدخال رصيد هذا الأسبوع بصورة نهائية في الرصيد الصافي المعتمد.`
+        }
+        confirmLabel={approveWeekUnrecordedCount > 0 ? 'اعتماد الأسبوع رغم الحصص غير المسجلة' : 'نعم، اعتمد الأسبوع'}
+        variant={approveWeekUnrecordedCount > 0 ? 'danger' : 'primary'}
         onConfirm={() => {
           if (approveConfirmWeek) {
             approveWeek(approveConfirmWeek.id);

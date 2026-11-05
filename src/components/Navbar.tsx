@@ -20,16 +20,22 @@ import {
   Menu,
   X,
   FileSpreadsheet,
+  GraduationCap,
+  CalendarRange,
 } from 'lucide-react';
+import { PWAInstallButton } from './PWAInstallButton.tsx';
+import { SaveStatusIndicator } from './SaveStatusIndicator.tsx';
 
 export type NavTab =
   | 'dashboard'
+  | 'calendar'
   | 'daily'
   | 'base_schedule'
   | 'support_schedule'
   | 'extra_sessions'
   | 'weeks'
   | 'liquidation'
+  | 'trainings'
   | 'backup'
   | 'settings';
 
@@ -44,12 +50,14 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab }) => {
 
   const navItems: { id: NavTab; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'dashboard', label: 'الرئيسية', icon: LayoutDashboard },
+    { id: 'calendar', label: 'الرزنامة الأسبوعية', icon: CalendarRange },
     { id: 'daily', label: 'التسجيل اليومي', icon: CalendarCheck },
     { id: 'base_schedule', label: 'جدول الحصص', icon: CalendarDays },
     { id: 'support_schedule', label: 'حصص الدعم الثابتة', icon: Clock },
     { id: 'extra_sessions', label: 'الحصص الإضافية', icon: Sparkles },
     { id: 'weeks', label: 'الأسابيع والتقييم', icon: BarChart3 },
     { id: 'liquidation', label: 'التصفية المالية', icon: Receipt },
+    { id: 'trainings', label: 'التكوينات والتكليفات', icon: GraduationCap },
     { id: 'backup', label: 'البيانات والنسخ', icon: Database },
     { id: 'settings', label: 'الإعدادات', icon: Settings },
   ];
@@ -80,30 +88,25 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab }) => {
           </div>
 
           {/* Action Bar (Save Button & Status) */}
-          <div className="flex items-center gap-3">
-            {/* Status Indicator */}
-            <div className="hidden md:flex items-center gap-2 text-xs px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200">
-              <span
-                className={`w-2.5 h-2.5 rounded-full ${
-                  hasUnsavedChanges ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'
-                }`}
-              />
-              <span className="text-slate-600 font-medium">
-                {hasUnsavedChanges ? 'توجد تغييرات غير محفوظة' : `محفوظ (${lastSavedAt})`}
-              </span>
+          <div className="flex items-center gap-2.5">
+            {/* Real-time Auto-Save Status Indicator */}
+            <div className="hidden md:block">
+              <SaveStatusIndicator variant="full" />
             </div>
 
-            {/* Save Button */}
+            {/* PWA Install Button */}
+            <div className="hidden sm:block">
+              <PWAInstallButton variant="navbar" />
+            </div>
+
+            {/* Backup Manual Save Button */}
             <button
               onClick={() => saveAll(true)}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-bold shadow-xs transition-all cursor-pointer ${
-                hasUnsavedChanges
-                  ? 'bg-amber-600 hover:bg-amber-700 text-white shadow-amber-200 ring-2 ring-amber-400/30'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-              }`}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200/80"
+              title="تأكيد كتابة جميع التعديلات فورياً في IndexedDB"
             >
-              {hasUnsavedChanges ? <Save className="w-4 h-4" /> : <Check className="w-4 h-4 text-emerald-600" />}
-              <span>حفظ التغييرات</span>
+              <Save className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="hidden sm:inline">حفظ فوري</span>
             </button>
 
             {/* Mobile Menu Button */}
@@ -117,6 +120,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab }) => {
           </div>
         </div>
       </div>
+
 
       {/* Desktop Navigation Tabs */}
       <div className="hidden lg:block bg-slate-50/70 border-t border-slate-100">
@@ -147,12 +151,19 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab }) => {
       {/* Mobile Drawer */}
       {mobileMenuOpen && (
         <div className="lg:hidden bg-white border-b border-slate-200 px-4 pt-2 pb-4 space-y-1 shadow-lg animate-fade-in">
-          <div className="flex items-center gap-2 text-xs px-3 py-2 mb-2 rounded-lg bg-slate-100 text-slate-600">
-            <span
-              className={`w-2 h-2 rounded-full ${hasUnsavedChanges ? 'bg-amber-500' : 'bg-emerald-500'}`}
-            />
-            <span>{hasUnsavedChanges ? 'توجد تعديلات غير محفوظة' : `آخر حفظ: ${lastSavedAt}`}</span>
+          <div className="flex items-center justify-between gap-2 text-xs px-3 py-2 mb-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">
+            <SaveStatusIndicator variant="compact" />
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => saveAll(true)}
+                className="px-2 py-1 rounded-md bg-indigo-50 text-indigo-700 font-bold text-2xs hover:bg-indigo-100"
+              >
+                حفظ
+              </button>
+              <PWAInstallButton variant="compact" />
+            </div>
           </div>
+
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = currentTab === item.id;

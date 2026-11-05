@@ -9,13 +9,43 @@ export type AttendanceStatus = 'present' | 'absent' | 'late' | 'cancelled_by_sch
 export type SessionType = 'base' | 'recurring_support' | 'irregular_extra' | 'dated_extra';
 export type SchoolCancellationPolicy = 'waived_as_completed' | 'deduct_from_target';
 
+export type TrainingAssignmentType = 'training' | 'assignment';
+export type TrainingAssignmentStatus = 'completed' | 'in_progress';
+
+export interface TrainingAssignment {
+  id: string;
+  type: TrainingAssignmentType; // 'training' (تكوين) | 'assignment' (تكليف)
+  title?: string; // عنوان النشاط (اختياري)
+  date: string; // YYYY-MM-DD
+  durationMinutes: number; // المدة بالدقائق الصحيحة (0 إذا كان قيد الإنجاز)
+  notes?: string; // ملاحظة تفصيلية
+  status: TrainingAssignmentStatus; // 'completed' (منجز) | 'in_progress' (قيد الإنجاز)
+  academicYear: string; // الموسم الدراسي (مثلاً 2026-2027)
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppSettings {
-  referenceWeeklyHours: number; // e.g. 16
-  targetBaseWeeklyHours: number; // e.g. 14
-  referenceSessionDurationMinutes: number; // e.g. 55
+  // Weekly Session Volumes
+  referenceWeeklySessions: number; // e.g. 16 sessions (reference volume)
+  targetBaseWeeklySessions: number; // e.g. 14 sessions (morning base volume)
+  referenceSessionDurationMinutes: number; // e.g. 55 minutes (base session duration)
+  surplusSessionDurationMinutes: number; // e.g. 60 minutes (surplus evaluation session duration)
+
+  // Academic Season & Trainings Quota
+  academicYear: string; // e.g. '2026-2027'
+  trainingTargetHours: number; // e.g. 16 hours (= 960 minutes)
+
+  // Backward-compatibility aliases
+  referenceWeeklyHours?: number; // legacy alias
+  targetBaseWeeklyHours?: number; // legacy alias
+
+  // Calendar configuration
   weekStartDay: number; // 6 = Saturday
   weekEndDay: number; // 4 = Thursday
   holidayDay: number; // 5 = Friday
+
+  // Liquidation & Finance
   liquidationMethod: LiquidationMethod;
   pricePerSession: number;
   pricePerHour: number;
@@ -23,7 +53,13 @@ export interface AppSettings {
   dateFormat: string; // 'YYYY-MM-DD'
   schoolCancellationPolicy: SchoolCancellationPolicy;
   autoSave: boolean;
+  backupReminderEnabled?: boolean;
+  backupReminderIntervalDays?: number;
+  lastBackupDate?: string;
+  autoSaveDebounceMs?: number;
 }
+
+export type SaveStatus = 'saved' | 'saving' | 'error';
 
 export interface BaseScheduleItem {
   id: string;
@@ -145,4 +181,5 @@ export interface AppDatabaseSchema {
   weeks: WeekRecord[];
   liquidations: LiquidationRecord[];
   auditLogs: AuditLogEntry[];
+  trainingsAssignments?: TrainingAssignment[];
 }

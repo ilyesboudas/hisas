@@ -13,15 +13,20 @@ import {
   WeekRecord,
   LiquidationRecord,
   AuditLogEntry,
+  TrainingAssignment,
+  SaveStatus,
 } from '../types/index.ts';
 import {
   loadDatabaseFromLocalStorage,
   saveDatabaseToLocalStorage,
+  normalizeDatabase,
   validateDatabaseSchema,
   deduplicateRecords,
   DEFAULT_SETTINGS,
 } from '../utils/storage.ts';
-import { getSaturdayOfWeek, getThursdayOfWeek, getWeekIdForDate } from '../utils/dateUtils.ts';
+import { autoSaveEngine } from '../utils/autoSaveEngine.ts';
+import { loadFromIndexedDB, saveSnapshotToIndexedDB } from '../utils/indexedDb.ts';
+import { getSaturdayOfWeek, getThursdayOfWeek } from '../utils/dateUtils.ts';
 import { getInitialDemoDatabase } from '../utils/seedData.ts';
 
 export interface ToastMessage {
@@ -33,11 +38,16 @@ export interface ToastMessage {
 interface AppContextType {
   db: AppDatabaseSchema;
   hasUnsavedChanges: boolean;
+  saveStatus: SaveStatus;
   lastSavedAt: string;
+  saveError: string | null;
   toast: ToastMessage | null;
   clearToast: () => void;
   showToast: (type: 'success' | 'error' | 'info', message: string) => void;
   saveAll: (notify?: boolean) => boolean;
+  retrySave: () => Promise<boolean>;
+  flushSave: () => Promise<boolean>;
+  scheduleFieldSave: (updater: (prev: AppDatabaseSchema) => AppDatabaseSchema, debounceMs?: number) => void;
   
   // Settings
   updateSettings: (newSettings: AppSettings) => void;
@@ -67,9 +77,16 @@ interface AppContextType {
   addLiquidation: (liquidation: Omit<LiquidationRecord, 'id' | 'createdAt'>) => LiquidationRecord;
   deleteLiquidation: (id: string) => void;
 
+  // Trainings & Assignments
+  addTrainingAssignment: (item: Omit<TrainingAssignment, 'id' | 'createdAt' | 'updatedAt'>) => TrainingAssignment;
+  updateTrainingAssignment: (item: TrainingAssignment) => void;
+  deleteTrainingAssignment: (id: string) => void;
+  selectedAcademicYear: string;
+  setSelectedAcademicYear: (year: string) => void;
+
   // Backup & Restore
   exportJsonBackup: () => void;
-  importJsonBackup: (jsonContent: string) => { success: boolean; error?: string };
+  importJsonBackup: (jsonContent: string) => Promise<{ success: boolean; error?: string }>;
   resetToDemoData: () => void;
   clearAllData: () => void;
 }
@@ -77,10 +94,53 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | null>(null);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  // Synchronous initialization from localStorage for instant render
   const [db, setDb] = useState<AppDatabaseSchema>(() => loadDatabaseFromLocalStorage());
+  
+  // Save status states managed via autoSaveEngine
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>(() => autoSaveEngine.getStatus().status);
+  const [lastSavedAt, setLastSavedAt] = useState<string>(() => autoSaveEngine.getStatus().lastSavedAt);
+  const [saveError, setSaveError] = useState<string | null>(() => autoSaveEngine.getStatus().error);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
-  const [lastSavedAt, setLastSavedAt] = useState<string>(() => new Date().toLocaleTimeString('ar-DZ'));
   const [toast, setToast] = useState<ToastMessage | null>(null);
+
+  // Subscribe to autoSaveEngine
+  useEffect(() => {
+    const unsubscribe = autoSaveEngine.subscribe((status, time, err) => {
+      setSaveStatus(status);
+      setLastSavedAt(time);
+      setSaveError(err);
+      setHasUnsavedChanges(status === 'saving' || status === 'error');
+    });
+    return unsubscribe;
+  }, []);
+
+  // Hydrate from primary IndexedDB on initial launch if newer or populated
+  useEffect(() => {
+    let active = true;
+    loadFromIndexedDB().then((indexedDbData) => {
+      if (!active || !indexedDbData) return;
+      const validation = validateDatabaseSchema(indexedDbData);
+      if (validation.isValid) {
+        const localTime = new Date(db.exportedAt || 0).getTime();
+        const idbTime = new Date(indexedDbData.exportedAt || 0).getTime();
+
+        // If IndexedDB has newer or equal valid records, hydrate memory with normalized schema
+        if (idbTime >= localTime) {
+          setDb(normalizeDatabase(indexedDbData));
+        } else {
+          // localStorage was newer (e.g. from prior synchronous unload write), persist to IndexedDB now
+          autoSaveEngine.schedule(db, 0);
+        }
+      }
+    }).catch((err) => {
+      console.warn('Initial IndexedDB hydration check:', err);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const showToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
     setToast({
@@ -103,34 +163,55 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // Save all to localStorage
-  const saveAll = useCallback((notify = true): boolean => {
-    const success = saveDatabaseToLocalStorage(db);
-    if (success) {
-      setHasUnsavedChanges(false);
-      const timeStr = new Date().toLocaleTimeString('ar-DZ');
-      setLastSavedAt(timeStr);
-      if (notify) {
-        showToast('success', `تم حفظ جميع التغييرات بنجاح (${timeStr})`);
-      }
-      return true;
-    } else {
-      if (notify) {
-        showToast('error', 'تعذر حفظ البيانات في الذاكرة المحلية للمتصفح.');
-      }
-      return false;
-    }
-  }, [db, showToast]);
+  /**
+   * Central core mutator: Updates React state and schedules automatic save
+   */
+  const applyAndAutoSave = useCallback((
+    updater: (prev: AppDatabaseSchema) => AppDatabaseSchema,
+    immediate = true
+  ) => {
+    setDb((prev) => {
+      const next = updater(prev);
+      const debounceMs = immediate ? 0 : (next.settings.autoSaveDebounceMs || 400);
+      autoSaveEngine.schedule(next, debounceMs);
+      return next;
+    });
+  }, []);
 
-  // Auto-save effect if enabled
-  useEffect(() => {
-    if (hasUnsavedChanges && db.settings.autoSave) {
-      const timer = setTimeout(() => {
-        saveAll(false);
-      }, 1000);
-      return () => clearTimeout(timer);
+  /**
+   * Helper for input fields with debounced auto-saving (300-500ms)
+   */
+  const scheduleFieldSave = useCallback((
+    updater: (prev: AppDatabaseSchema) => AppDatabaseSchema,
+    debounceMs = 400
+  ) => {
+    setDb((prev) => {
+      const next = updater(prev);
+      autoSaveEngine.schedule(next, debounceMs);
+      return next;
+    });
+  }, []);
+
+  /**
+   * Manual save button handler (flushes all queues immediately)
+   */
+  const saveAll = useCallback((notify = true): boolean => {
+    autoSaveEngine.flush();
+    const timeStr = new Date().toLocaleTimeString('ar-DZ');
+    setLastSavedAt(timeStr);
+    if (notify) {
+      showToast('success', `تم تأكيد حفظ جميع التغييرات تلقائيًا (${timeStr})`);
     }
-  }, [hasUnsavedChanges, db, saveAll]);
+    return true;
+  }, [showToast]);
+
+  const retrySave = useCallback((): Promise<boolean> => {
+    return autoSaveEngine.retryNow(db);
+  }, [db]);
+
+  const flushSave = useCallback((): Promise<boolean> => {
+    return autoSaveEngine.flush();
+  }, []);
 
   // Helper to append audit log
   const logAudit = useCallback((
@@ -170,25 +251,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       status: 'unreviewed',
     };
 
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       weeks: deduplicateRecords([...prev.weeks, newWeek]),
-    }));
-    setHasUnsavedChanges(true);
+    }), true);
+
     return newWeek;
-  }, [db.weeks]);
+  }, [db.weeks, applyAndAutoSave]);
 
   // Settings
   const updateSettings = useCallback((newSettings: AppSettings) => {
     const audit = logAudit('update', 'settings', 'app_settings', 'تحديث إعدادات التطبيق');
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       settings: newSettings,
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('success', 'تم تحديث الإعدادات بنجاح.');
-  }, [logAudit, showToast]);
+    }), true);
+    showToast('success', 'تم حفظ الإعدادات تلقائيًا في قاعدة البيانات.');
+  }, [logAudit, applyAndAutoSave, showToast]);
 
   // Base Schedule
   const addBaseScheduleItem = useCallback((
@@ -203,40 +283,40 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const audit = logAudit('create', 'baseSchedule', newItem.id, `إضافة حصة أساسية: ${newItem.subject || ''} (${newItem.durationMinutes} د)`);
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       baseSchedule: deduplicateRecords([...prev.baseSchedule, newItem]),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('success', 'تمت إضافة الحصة الأساسية إلى الجدول.');
+    }), true);
+
+    showToast('success', 'تمت إضافة الحصة الأساسية وحفظها تلقائيًا.');
     return newItem;
-  }, [logAudit, showToast]);
+  }, [logAudit, applyAndAutoSave, showToast]);
 
   const updateBaseScheduleItem = useCallback((item: BaseScheduleItem) => {
     const now = new Date().toISOString();
     const updated: BaseScheduleItem = { ...item, updatedAt: now };
     const audit = logAudit('update', 'baseSchedule', item.id, `تعديل الحصة الأساسية: ${item.subject || ''}`);
 
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       baseSchedule: prev.baseSchedule.map((b) => (b.id === item.id ? updated : b)),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('success', 'تم تحديث الحصة الأساسية.');
-  }, [logAudit, showToast]);
+    }), true);
+
+    showToast('success', 'تم تحديث الحصة وحفظها تلقائيًا.');
+  }, [logAudit, applyAndAutoSave, showToast]);
 
   const deleteBaseScheduleItem = useCallback((id: string) => {
     const audit = logAudit('delete', 'baseSchedule', id, `حذف الحصة الأساسية رقم ${id}`);
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       baseSchedule: prev.baseSchedule.filter((b) => b.id !== id),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('info', 'تم حذف الحصة من الجدول الأساسي.');
-  }, [logAudit, showToast]);
+    }), true);
+
+    showToast('info', 'تم حذف الحصة وتحديث قاعدة البيانات تلقائيًا.');
+  }, [logAudit, applyAndAutoSave, showToast]);
 
   // Support Schedule
   const addSupportScheduleItem = useCallback((
@@ -251,40 +331,40 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const audit = logAudit('create', 'supportSchedule', newItem.id, `إضافة حصة دعم ثابتة: ${newItem.subject || ''}`);
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       supportSchedule: deduplicateRecords([...prev.supportSchedule, newItem]),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('success', 'تمت إضافة حصة الدعم الثابتة.');
+    }), true);
+
+    showToast('success', 'تمت إضافة حصة الدعم وحفظها تلقائيًا.');
     return newItem;
-  }, [logAudit, showToast]);
+  }, [logAudit, applyAndAutoSave, showToast]);
 
   const updateSupportScheduleItem = useCallback((item: SupportScheduleItem) => {
     const now = new Date().toISOString();
     const updated: SupportScheduleItem = { ...item, updatedAt: now };
     const audit = logAudit('update', 'supportSchedule', item.id, `تعديل حصة الدعم الثابتة: ${item.subject || ''}`);
 
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       supportSchedule: prev.supportSchedule.map((s) => (s.id === item.id ? updated : s)),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('success', 'تم تحديث حصة الدعم الثابتة.');
-  }, [logAudit, showToast]);
+    }), true);
+
+    showToast('success', 'تم تحديث حصة الدعم وحفظها تلقائيًا.');
+  }, [logAudit, applyAndAutoSave, showToast]);
 
   const deleteSupportScheduleItem = useCallback((id: string) => {
     const audit = logAudit('delete', 'supportSchedule', id, `حذف حصة الدعم الثابتة رقم ${id}`);
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       supportSchedule: prev.supportSchedule.filter((s) => s.id !== id),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('info', 'تم حذف حصة الدعم الثابتة.');
-  }, [logAudit, showToast]);
+    }), true);
+
+    showToast('info', 'تم حذف حصة الدعم وحفظ التغيير تلقائيًا.');
+  }, [logAudit, applyAndAutoSave, showToast]);
 
   // Daily Records
   const saveDailyRecord = useCallback((
@@ -295,7 +375,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     let existingId = recordInput.id;
     if (!existingId) {
-      // Check if duplicate exists for the same date and schedule item
       if (recordInput.baseScheduleId) {
         const found = db.dailyRecords.find(
           (r) => r.date === recordInput.date && r.baseScheduleId === recordInput.baseScheduleId
@@ -317,7 +396,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       updatedAt: now,
     };
 
-    setDb((prev) => {
+    applyAndAutoSave((prev) => {
       const filtered = prev.dailyRecords.filter((r) => r.id !== recordId);
       const audit = logAudit(
         existingId ? 'update' : 'create',
@@ -330,11 +409,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         dailyRecords: deduplicateRecords([...filtered, finalRecord]),
         auditLogs: [audit, ...prev.auditLogs],
       };
-    });
+    }, true);
 
-    setHasUnsavedChanges(true);
     return finalRecord;
-  }, [db.dailyRecords, ensureWeekExists, logAudit]);
+  }, [db.dailyRecords, ensureWeekExists, logAudit, applyAndAutoSave]);
 
   const batchSaveDailyRecords = useCallback((
     recordsInput: (Omit<DailySessionRecord, 'id' | 'createdAt' | 'updatedAt'> & { id?: string })[]
@@ -364,7 +442,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
     }
 
-    setDb((prev) => {
+    applyAndAutoSave((prev) => {
       const idsToReplace = new Set(updatedRecords.map((x) => x.id));
       const remaining = prev.dailyRecords.filter((x) => !idsToReplace.has(x.id));
       const audit = logAudit('update', 'dailyRecord', 'batch', `تسجيل جماعي لـ ${updatedRecords.length} حصة`);
@@ -373,22 +451,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         dailyRecords: deduplicateRecords([...remaining, ...updatedRecords]),
         auditLogs: [audit, ...prev.auditLogs],
       };
-    });
+    }, true);
 
-    setHasUnsavedChanges(true);
-    showToast('success', `تم حفظ تسجيلات اليوم (${updatedRecords.length} حصص).`);
-  }, [db.dailyRecords, ensureWeekExists, logAudit, showToast]);
+    showToast('success', `تم حفظ تسجيلات اليوم تلقائيًا (${updatedRecords.length} حصص).`);
+  }, [db.dailyRecords, ensureWeekExists, logAudit, applyAndAutoSave, showToast]);
 
   const deleteDailyRecord = useCallback((id: string) => {
     const audit = logAudit('delete', 'dailyRecord', id, `حذف تسجيل الحصة رقم ${id}`);
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       dailyRecords: prev.dailyRecords.filter((r) => r.id !== id),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('info', 'تم حذف تسجيل الحصة.');
-  }, [logAudit, showToast]);
+    }), true);
+
+    showToast('info', 'تم حذف التسجيل وحفظ التغيير تلقائيًا.');
+  }, [logAudit, applyAndAutoSave, showToast]);
 
   // Weeks
   const updateWeekStatus = useCallback((
@@ -396,7 +473,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     status: 'unreviewed' | 'in_progress' | 'approved',
     notes?: string
   ) => {
-    setDb((prev) => {
+    applyAndAutoSave((prev) => {
       const updatedWeeks = prev.weeks.map((w) => {
         if (w.id === weekId) {
           return {
@@ -414,16 +491,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         weeks: updatedWeeks,
         auditLogs: [audit, ...prev.auditLogs],
       };
-    });
-    setHasUnsavedChanges(true);
-  }, [logAudit]);
+    }, true);
+  }, [logAudit, applyAndAutoSave]);
 
   const approveWeek = useCallback((weekId: string): boolean => {
     const week = db.weeks.find((w) => w.id === weekId);
     if (!week) return false;
 
     const approvalDate = new Date().toISOString();
-    setDb((prev) => {
+    applyAndAutoSave((prev) => {
       const updatedWeeks = prev.weeks.map((w) => {
         if (w.id === weekId) {
           return {
@@ -440,19 +516,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         weeks: updatedWeeks,
         auditLogs: [audit, ...prev.auditLogs],
       };
-    });
+    }, true);
 
-    setHasUnsavedChanges(true);
-    showToast('success', `تم اعتماد الأسبوع [${week.startDate} إلى ${week.endDate}] بنجاح.`);
+    showToast('success', `تم اعتماد الأسبوع [${week.startDate} إلى ${week.endDate}] وحفظه تلقائيًا.`);
     return true;
-  }, [db.weeks, logAudit, showToast]);
+  }, [db.weeks, logAudit, applyAndAutoSave, showToast]);
 
   const reopenWeek = useCallback((weekId: string, reason: string): boolean => {
     const week = db.weeks.find((w) => w.id === weekId);
     if (!week) return false;
 
     const reopenedDate = new Date().toISOString();
-    setDb((prev) => {
+    applyAndAutoSave((prev) => {
       const updatedWeeks = prev.weeks.map((w) => {
         if (w.id === weekId) {
           return {
@@ -475,12 +550,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         weeks: updatedWeeks,
         auditLogs: [audit, ...prev.auditLogs],
       };
-    });
+    }, true);
 
-    setHasUnsavedChanges(true);
-    showToast('info', `تمت إعادة فتح الأسبوع [${week.startDate} إلى ${week.endDate}] للتصحيح.`);
+    showToast('info', `تمت إعادة فتح الأسبوع [${week.startDate} إلى ${week.endDate}] للتصحيح وحفظ التغيير تلقائيًا.`);
     return true;
-  }, [db.weeks, logAudit, showToast]);
+  }, [db.weeks, logAudit, applyAndAutoSave, showToast]);
 
   // Liquidations
   const addLiquidation = useCallback((
@@ -501,54 +575,159 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       `اعتماد تصفية مالية للفترة [${newLiq.startDate} إلى ${newLiq.endDate}]: ${newLiq.snapshot.financialAmount} ${db.settings.currency}`
     );
 
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       liquidations: deduplicateRecords([newLiq, ...prev.liquidations]),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
+    }), true);
 
-    setHasUnsavedChanges(true);
-    showToast('success', 'تم اعتماد التصفية وحفظها في الأرشيف.');
+    showToast('success', 'تم اعتماد التصفية وحفظها تلقائيًا في الأرشيف.');
     return newLiq;
-  }, [db.settings.currency, logAudit, showToast]);
+  }, [db.settings.currency, logAudit, applyAndAutoSave, showToast]);
 
   const deleteLiquidation = useCallback((id: string) => {
     const audit = logAudit('delete', 'liquidation', id, `حذف التصفية رقم ${id}`);
-    setDb((prev) => ({
+    applyAndAutoSave((prev) => ({
       ...prev,
       liquidations: prev.liquidations.filter((l) => l.id !== id),
       auditLogs: [audit, ...prev.auditLogs],
-    }));
-    setHasUnsavedChanges(true);
-    showToast('info', 'تم حذف التصفية من الأرشيف.');
-  }, [logAudit, showToast]);
+    }), true);
+
+    showToast('info', 'تم حذف التصفية وحفظ التغيير تلقائيًا.');
+  }, [logAudit, applyAndAutoSave, showToast]);
+
+  // Selected Academic Year
+  const [selectedAcademicYear, setSelectedAcademicYear] = useState<string>(
+    () => db.settings.academicYear || '2026-2027'
+  );
+
+  useEffect(() => {
+    if (db.settings.academicYear && !selectedAcademicYear) {
+      setSelectedAcademicYear(db.settings.academicYear);
+    }
+  }, [db.settings.academicYear, selectedAcademicYear]);
+
+  // Trainings & Assignments CRUD
+  const addTrainingAssignment = useCallback(
+    (item: Omit<TrainingAssignment, 'id' | 'createdAt' | 'updatedAt'>): TrainingAssignment => {
+      const now = new Date().toISOString();
+      const newActivity: TrainingAssignment = {
+        ...item,
+        id: `train_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const audit = logAudit(
+        'create',
+        'training_assignment',
+        newActivity.id,
+        `إضافة ${newActivity.type === 'training' ? 'تكوين' : 'تكليف'}: ${newActivity.title || 'بدون عنوان'} (${newActivity.durationMinutes} دقيقة) [${newActivity.academicYear}]`
+      );
+
+      applyAndAutoSave((prev) => ({
+        ...prev,
+        trainingsAssignments: deduplicateRecords([newActivity, ...(prev.trainingsAssignments || [])]),
+        auditLogs: [audit, ...prev.auditLogs],
+      }), true);
+
+      showToast('success', `تم حفظ ${newActivity.type === 'training' ? 'التكوين' : 'التكليف'} تلقائيًا.`);
+      return newActivity;
+    },
+    [logAudit, applyAndAutoSave, showToast]
+  );
+
+  const updateTrainingAssignment = useCallback(
+    (item: TrainingAssignment) => {
+      const now = new Date().toISOString();
+      const updated: TrainingAssignment = {
+        ...item,
+        updatedAt: now,
+      };
+
+      const audit = logAudit(
+        'update',
+        'training_assignment',
+        item.id,
+        `تعديل ${item.type === 'training' ? 'تكوين' : 'تكليف'}: ${item.title || 'بدون عنوان'} (${item.durationMinutes} دقيقة)`
+      );
+
+      applyAndAutoSave((prev) => ({
+        ...prev,
+        trainingsAssignments: (prev.trainingsAssignments || []).map((t) => (t.id === item.id ? updated : t)),
+        auditLogs: [audit, ...prev.auditLogs],
+      }), true);
+
+      showToast('success', 'تم تعديل النشاط وحفظه تلقائيًا.');
+    },
+    [logAudit, applyAndAutoSave, showToast]
+  );
+
+  const deleteTrainingAssignment = useCallback(
+    (id: string) => {
+      const target = (db.trainingsAssignments || []).find((t) => t.id === id);
+      const audit = logAudit(
+        'delete',
+        'training_assignment',
+        id,
+        `حذف ${target?.type === 'training' ? 'تكوين' : 'تكليف'} رقم ${id}`
+      );
+
+      applyAndAutoSave((prev) => ({
+        ...prev,
+        trainingsAssignments: (prev.trainingsAssignments || []).filter((t) => t.id !== id),
+        auditLogs: [audit, ...prev.auditLogs],
+      }), true);
+
+      showToast('info', 'تم حذف النشاط وتحديث قاعدة البيانات تلقائيًا.');
+    },
+    [db.trainingsAssignments, logAudit, applyAndAutoSave, showToast]
+  );
 
   // Backup & Restore
   const exportJsonBackup = useCallback(() => {
     try {
+      const nowIso = new Date().toISOString();
+      
+      // Update lastBackupDate in settings
+      const updatedSettings: AppSettings = {
+        ...db.settings,
+        lastBackupDate: nowIso,
+      };
+
       const dataToExport: AppDatabaseSchema = {
         ...db,
-        exportedAt: new Date().toISOString(),
+        settings: updatedSettings,
+        exportedAt: nowIso,
       };
+
+      // Save updated settings with lastBackupDate
+      applyAndAutoSave((prev) => ({
+        ...prev,
+        settings: updatedSettings,
+      }), true);
+
       const jsonStr = JSON.stringify(dataToExport, null, 2);
       const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      const dateTag = new Date().toISOString().split('T')[0];
+      const dateTag = nowIso.split('T')[0];
       link.href = url;
       link.download = `tadween_teaching_backup_${dateTag}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      showToast('success', 'تم تنزيل النسخة الاحتياطية بنجاح.');
+      showToast('success', 'تم تنزيل النسخة الاحتياطية وتحديث تاريخ النسخ بنجاح.');
     } catch (err) {
       console.error('Export failed:', err);
       showToast('error', 'حدث خطأ أثناء تصدير النسخة الاحتياطية.');
     }
-  }, [db, showToast]);
+  }, [db, applyAndAutoSave, showToast]);
 
-  const importJsonBackup = useCallback((jsonContent: string): { success: boolean; error?: string } => {
+  const importJsonBackup = useCallback(async (
+    jsonContent: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
       const parsed = JSON.parse(jsonContent);
       const validation = validateDatabaseSchema(parsed);
@@ -556,16 +735,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return { success: false, error: validation.error || 'الملف تالف وغير متوافق مع بنية البيانات.' };
       }
 
-      // Pre-save backup of current db
-      saveDatabaseToLocalStorage(db);
+      // Save a local snapshot of current db before importing
+      await saveSnapshotToIndexedDB(db, 'نقطة استعادة احترازية قبل استيراد ملف JSON');
 
       const restored: AppDatabaseSchema = {
         ...parsed,
+        settings: {
+          ...DEFAULT_SETTINGS,
+          ...(parsed.settings || {}),
+          academicYear: parsed.settings?.academicYear || '2026-2027',
+          trainingTargetHours: parsed.settings?.trainingTargetHours || 16,
+        },
         baseSchedule: deduplicateRecords(parsed.baseSchedule || []),
         supportSchedule: deduplicateRecords(parsed.supportSchedule || []),
         dailyRecords: deduplicateRecords(parsed.dailyRecords || []),
         weeks: deduplicateRecords(parsed.weeks || []),
         liquidations: deduplicateRecords(parsed.liquidations || []),
+        trainingsAssignments: deduplicateRecords(parsed.trainingsAssignments || []),
         auditLogs: deduplicateRecords([
           logAudit('restore_backup', 'system', 'import', 'استعادة نسخة احتياطية من ملف JSON'),
           ...(parsed.auditLogs || []),
@@ -573,9 +759,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
 
       setDb(restored);
-      saveDatabaseToLocalStorage(restored);
-      setHasUnsavedChanges(false);
-      showToast('success', 'تمت استعادة البيانات بنجاح من النسخة الاحتياطية.');
+      autoSaveEngine.schedule(restored, 0);
+      showToast('success', 'تمت استعادة البيانات وحفظها تلقائيًا بنجاح.');
       return { success: true };
     } catch (err: any) {
       console.error('Import error:', err);
@@ -583,15 +768,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, [db, logAudit, showToast]);
 
-  const resetToDemoData = useCallback(() => {
+  const resetToDemoData = useCallback(async () => {
+    // Take safety snapshot before reset
+    await saveSnapshotToIndexedDB(db, 'نقطة استعادة قبل استعادة البيانات النموذجية');
     const demo = getInitialDemoDatabase();
     setDb(demo);
-    saveDatabaseToLocalStorage(demo);
-    setHasUnsavedChanges(false);
-    showToast('info', 'تمت استعادة البيانات النموذجية.');
-  }, [showToast]);
+    autoSaveEngine.schedule(demo, 0);
+    showToast('info', 'تمت استعادة البيانات النموذجية وحفظها تلقائيًا.');
+  }, [db, showToast]);
 
-  const clearAllData = useCallback(() => {
+  const clearAllData = useCallback(async () => {
+    // Take safety snapshot before clear
+    await saveSnapshotToIndexedDB(db, 'نقطة استعادة قبل مسح البيانات');
     const emptyDb: AppDatabaseSchema = {
       version: 1,
       exportedAt: new Date().toISOString(),
@@ -603,23 +791,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       weeks: [],
       liquidations: [],
       auditLogs: [],
+      trainingsAssignments: [],
     };
     setDb(emptyDb);
-    saveDatabaseToLocalStorage(emptyDb);
-    setHasUnsavedChanges(false);
-    showToast('info', 'تم مسح جميع البيانات.');
-  }, [showToast]);
+    autoSaveEngine.schedule(emptyDb, 0);
+    showToast('info', 'تم مسح جميع البيانات وحفظ الحالة الفارغة تلقائيًا.');
+  }, [db, showToast]);
 
   return (
     <AppContext.Provider
       value={{
         db,
         hasUnsavedChanges,
+        saveStatus,
         lastSavedAt,
+        saveError,
         toast,
         clearToast,
         showToast,
         saveAll,
+        retrySave,
+        flushSave,
+        scheduleFieldSave,
         updateSettings,
         addBaseScheduleItem,
         updateBaseScheduleItem,
@@ -636,6 +829,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         reopenWeek,
         addLiquidation,
         deleteLiquidation,
+        addTrainingAssignment,
+        updateTrainingAssignment,
+        deleteTrainingAssignment,
+        selectedAcademicYear,
+        setSelectedAcademicYear,
         exportJsonBackup,
         importJsonBackup,
         resetToDemoData,

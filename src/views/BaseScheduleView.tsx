@@ -54,7 +54,10 @@ export const BaseScheduleView: React.FC = () => {
       .reduce((sum, item) => sum + item.durationMinutes, 0);
   }, [db.baseSchedule]);
 
-  const targetMinutes = db.settings.targetBaseWeeklyHours * 60; // 14 * 60 = 840 min
+  const targetSessions = db.settings.targetBaseWeeklySessions ?? db.settings.targetBaseWeeklyHours ?? 14;
+  const refSessions = db.settings.referenceWeeklySessions ?? db.settings.referenceWeeklyHours ?? 16;
+  const sessionDuration = db.settings.referenceSessionDurationMinutes ?? 55;
+  const targetMinutes = targetSessions * sessionDuration; // 14 * 55 = 770 min
   const programmedHours = Math.floor(totalProgrammedMinutes / 60);
   const programmedRemainderMinutes = totalProgrammedMinutes % 60;
 
@@ -187,10 +190,10 @@ export const BaseScheduleView: React.FC = () => {
             </div>
             <div className="text-xs mt-1 text-slate-600">
               الحجم الأساسي المستهدف في الإعدادات:{' '}
-              <span className="font-bold">{db.settings.targetBaseWeeklyHours} ساعة</span> (
-              {targetMinutes} دقيقة) — الفرق عن الحجم المرجعي (16 ساعة):{' '}
-              <span className="font-bold">
-                {db.settings.referenceWeeklyHours - db.settings.targetBaseWeeklyHours} ساعات أسبوعيًا
+              <span className="font-bold">{targetSessions} حصة</span> (
+              {targetMinutes} دقيقة) — الفرق عن الحجم المرجعي ({refSessions} حصة):{' '}
+              <span className="font-bold text-rose-600">
+                {refSessions - targetSessions} حصص = {(refSessions - targetSessions) * sessionDuration} دقيقة عجز أساسي
               </span>
             </div>
           </div>

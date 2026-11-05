@@ -1,0 +1,18 @@
+import type { CapacitorConfig } from '@capacitor/cli';
+
+const config: CapacitorConfig = {
+  appId: 'com.tadween.hisas',
+  appName: 'تدوين حصص التدريس',
+  webDir: 'dist',
+  server: {
+    androidScheme: 'https',
+    cleartext: true,
+  },
+  android: {
+    allowMixedContent: true,
+    captureInput: true,
+    webContentsDebuggingEnabled: false,
+  },
+};
+
+export default config;

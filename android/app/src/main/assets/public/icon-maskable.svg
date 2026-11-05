@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="mBgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1d4ed8" />
+      <stop offset="100%" stop-color="#172554" />
+    </linearGradient>
+    <linearGradient id="mAccentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+    <linearGradient id="mGoldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#f59e0b" />
+    </linearGradient>
+    <filter id="mShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Full-bleed background for maskable icons (safe zone is center 80%) -->
+  <rect width="512" height="512" fill="url(#mBgGrad)" />
+
+  <!-- Center group scaled to 80% inside safe zone -->
+  <g transform="translate(256, 256) scale(0.78) translate(-256, -256)">
+    <!-- Main Notebook / Lesson Register Slate -->
+    <g filter="url(#mShadow)">
+      <rect x="110" y="96" width="292" height="320" rx="28" fill="#ffffff" />
+      <path d="M 110 124 C 110 108.5 122.5 96 138 96 L 374 96 C 389.5 96 402 108.5 402 124 L 402 148 L 110 148 Z" fill="url(#mAccentGrad)" />
+      <circle cx="140" cy="122" r="6" fill="#ffffff" opacity="0.8" />
+      <circle cx="160" cy="122" r="6" fill="#ffffff" opacity="0.8" />
+      <circle cx="180" cy="122" r="6" fill="#ffffff" opacity="0.8" />
+
+      <rect x="146" y="180" width="130" height="14" rx="7" fill="#cbd5e1" />
+      <rect x="146" y="214" width="90" height="14" rx="7" fill="#e2e8f0" />
+      <rect x="146" y="248" width="110" height="14" rx="7" fill="#e2e8f0" />
+      <rect x="146" y="282" width="80" height="14" rx="7" fill="#e2e8f0" />
+    </g>
+
+    <!-- Precision Time Clock badge on right side -->
+    <g filter="url(#mShadow)">
+      <circle cx="316" cy="276" r="82" fill="#0f172a" stroke="#38bdf8" stroke-width="7" />
+      <circle cx="316" cy="276" r="72" fill="#1e293b" />
+      
+      <circle cx="316" cy="216" r="4" fill="#94a3b8" />
+      <circle cx="376" cy="276" r="4" fill="#94a3b8" />
+      <circle cx="316" cy="336" r="4" fill="#94a3b8" />
+      <circle cx="256" cy="276" r="4" fill="#94a3b8" />
+
+      <line x1="316" y1="276" x2="344" y2="242" stroke="#ffffff" stroke-width="6" stroke-linecap="round" />
+      <line x1="316" y1="276" x2="304" y2="222" stroke="url(#mGoldGrad)" stroke-width="5" stroke-linecap="round" />
+      <circle cx="316" cy="276" r="7" fill="url(#mGoldGrad)" />
+    </g>
+
+    <!-- Completed Session Check Badge -->
+    <g filter="url(#mShadow)">
+      <circle cx="156" cy="344" r="34" fill="#10b981" stroke="#ffffff" stroke-width="4" />
+      <path d="M 144 344 L 152 352 L 168 334" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+    </g>
+  </g>
+</svg>

@@ -156,14 +156,24 @@ export function calculateWeekMetrics(
     .filter((item) => item.isActive)
     .reduce((sum, item) => sum + item.durationMinutes, 0);
 
+  const refSessions = settings.referenceWeeklySessions ?? settings.referenceWeeklyHours ?? 16;
+  const baseSessionDuration = settings.referenceSessionDurationMinutes ?? 55;
+  const targetBaseSessions = settings.targetBaseWeeklySessions ?? settings.targetBaseWeeklyHours ?? 14;
+  const plannedBaseMinutes = targetBaseSessions * baseSessionDuration;
+
   if (scheduledBaseMinutes === 0 && activeBaseScheduledTotal > 0) {
     scheduledBaseMinutes = activeBaseScheduledTotal;
+  } else if (scheduledBaseMinutes === 0) {
+    scheduledBaseMinutes = plannedBaseMinutes;
   }
 
-  const requiredReferenceMinutes = settings.referenceWeeklyHours * 60;
+  // Required reference volume in minutes: 16 sessions * 55 min = 880 min
+  const requiredReferenceMinutes = refSessions * baseSessionDuration;
   const isApproved = week.status === 'approved';
 
-  // Provisional net minutes (for preview)
+  // Total base deficit = (requiredReferenceMinutes - completedBaseMinutes)
+  // Which naturally equals: (refSessions - targetBaseSessions) * 55 + absencesMinutes + delaysMinutes.
+  // Net minutes: Extra sessions completed minus deficit = (completedBaseMinutes + completedExtraMinutes) - requiredReferenceMinutes
   const provisionalNetMinutes = (completedBaseMinutes + completedExtraMinutes) - requiredReferenceMinutes;
 
   // Approved Net Minutes: strictly 0 if week is not approved!
@@ -192,11 +202,15 @@ export function calculateWeekMetrics(
 }
 
 /**
- * Converts net minutes into hours, minutes, sessions, and remainder
+ * Converts net minutes into hours, minutes, sessions, and remainder according to:
+ * - Rule 5: If deficit remains, display it in minutes.
+ * - Rule 6: If surplus is achieved, convert to equivalent sessions at 60 min/session, keeping remainder minutes.
+ * - Rule 7: Distinct units: 55 min for base session, 60 min for surplus session.
  */
 export function convertMinutesToSessions(
   netMinutes: number,
-  sessionDuration = 55
+  baseSessionDuration = 55,
+  surplusSessionDuration = 60
 ): {
   isPositive: boolean;
   hours: number;
@@ -206,26 +220,51 @@ export function convertMinutesToSessions(
   formattedTimeText: string;
   formattedSessionsText: string;
 } {
-  const isPositive = netMinutes >= 0;
   const absMin = Math.abs(netMinutes);
   const hours = Math.floor(absMin / 60);
   const minutes = absMin % 60;
-  const equivalentSessions = Math.floor(absMin / sessionDuration);
-  const remainderMinutes = absMin % sessionDuration;
 
-  const sign = isPositive ? '+' : '-';
-  const formattedTimeText = `${sign}${hours} س و ${minutes} د`;
-  const sessionWord = equivalentSessions === 1 ? 'حصة' : equivalentSessions === 2 ? 'حصتان' : 'حصص';
-  const formattedSessionsText = `${sign}${equivalentSessions} ${sessionWord} و ${remainderMinutes} دقيقة`;
+  if (netMinutes < 0) {
+    // Deficit: display in minutes
+    const formattedTimeText = `-${hours} س و ${minutes} د (${absMin} د)`;
+    const formattedSessionsText = `عجز ${absMin} دقيقة`;
+    return {
+      isPositive: false,
+      hours,
+      minutes,
+      equivalentSessions: 0,
+      remainderMinutes: absMin,
+      formattedTimeText,
+      formattedSessionsText,
+    };
+  }
+
+  if (netMinutes > 0) {
+    // Surplus: evaluate on 60 min session basis
+    const equivalentSessions = Math.floor(absMin / surplusSessionDuration);
+    const remainderMinutes = absMin % surplusSessionDuration;
+    const sessionWord = equivalentSessions === 1 ? 'حصة واحدة' : equivalentSessions === 2 ? 'حصتان' : 'حصص';
+    const formattedTimeText = `+${hours} س و ${minutes} د`;
+    const formattedSessionsText = `فائض ${absMin} دقيقة (${equivalentSessions} ${sessionWord} و ${remainderMinutes} دقيقة)`;
+    return {
+      isPositive: true,
+      hours,
+      minutes,
+      equivalentSessions,
+      remainderMinutes,
+      formattedTimeText,
+      formattedSessionsText,
+    };
+  }
 
   return {
-    isPositive,
-    hours,
-    minutes,
-    equivalentSessions,
-    remainderMinutes,
-    formattedTimeText,
-    formattedSessionsText,
+    isPositive: true,
+    hours: 0,
+    minutes: 0,
+    equivalentSessions: 0,
+    remainderMinutes: 0,
+    formattedTimeText: '0 س و 0 د',
+    formattedSessionsText: 'رصيد متوازن (0 دقيقة)',
   };
 }
 
@@ -236,7 +275,8 @@ export function calculateFinancialAmount(
   netMinutes: number,
   method: LiquidationMethod,
   rate: number,
-  manualAdjustment = 0
+  manualAdjustment = 0,
+  surplusSessionDuration = 60
 ): {
   baseAmount: number;
   finalAmount: number;
@@ -250,8 +290,8 @@ export function calculateFinancialAmount(
 
   let baseAmount = 0;
   if (method === 'per_session') {
-    // Each 55 minutes is 1 session
-    baseAmount = (netMinutes / 55) * rate;
+    // Evaluated per equivalent session (60 minutes)
+    baseAmount = (netMinutes / surplusSessionDuration) * rate;
   } else {
     // Each 60 minutes is 1 hour
     baseAmount = (netMinutes / 60) * rate;
@@ -344,7 +384,8 @@ export function calculatePeriodSummary(
 
   const converted = convertMinutesToSessions(
     approvedNetMinutes,
-    settings.referenceSessionDurationMinutes || 55
+    settings.referenceSessionDurationMinutes || 55,
+    settings.surplusSessionDurationMinutes || 60
   );
 
   const rateApplied = filter?.rate !== undefined
@@ -358,7 +399,8 @@ export function calculatePeriodSummary(
     approvedNetMinutes,
     methodApplied,
     rateApplied,
-    manualAdjustment
+    manualAdjustment,
+    settings.surplusSessionDurationMinutes || 60
   );
 
   return {

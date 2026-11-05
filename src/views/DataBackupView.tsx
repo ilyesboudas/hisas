@@ -6,6 +6,12 @@
 import React, { useState, useRef } from 'react';
 import { useApp } from '../context/AppContext.tsx';
 import { validateDatabaseSchema } from '../utils/storage.ts';
+import {
+  saveSnapshotToIndexedDB,
+  listSnapshotsFromIndexedDB,
+  deleteSnapshotFromIndexedDB,
+  LocalDBSnapshot,
+} from '../utils/indexedDb.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   Download,
@@ -18,7 +24,14 @@ import {
   RotateCcw,
   RefreshCw,
   ShieldAlert,
+  HardDrive,
+  Camera,
+  Trash2,
+  FolderArchive,
+  Laptop,
+  Smartphone,
 } from 'lucide-react';
+
 
 export const DataBackupView: React.FC = () => {
   const {
@@ -82,15 +95,66 @@ export const DataBackupView: React.FC = () => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleConfirmImport = () => {
+  const handleConfirmImport = async () => {
     if (!importCandidate) return;
-    const res = importJsonBackup(importCandidate.content);
+    const res = await importJsonBackup(importCandidate.content);
     if (res.success) {
       setImportCandidate(null);
       setImportError(null);
+      await loadSnapshots();
     } else {
       setImportError(res.error || 'فشلت عملية الاستيراد.');
     }
+  };
+
+  const [snapshots, setSnapshots] = useState<LocalDBSnapshot[]>([]);
+
+  const [snapshotNote, setSnapshotNote] = useState('');
+  const [isCreatingSnapshot, setIsCreatingSnapshot] = useState(false);
+
+  // Load snapshots on mount
+  React.useEffect(() => {
+    loadSnapshots();
+  }, []);
+
+  const loadSnapshots = async () => {
+    try {
+      const list = await listSnapshotsFromIndexedDB();
+      setSnapshots(list);
+    } catch (err) {
+      console.warn('Failed to load snapshots:', err);
+    }
+  };
+
+  const handleCreateSnapshot = async () => {
+    setIsCreatingSnapshot(true);
+    try {
+      const note = snapshotNote.trim() || `نقطة استعادة - ${new Date().toLocaleDateString('ar-DZ')}`;
+      await saveSnapshotToIndexedDB(db, note);
+      setSnapshotNote('');
+      await loadSnapshots();
+      showToast('success', 'تم إنشاء نقطة الاستعادة بنجاح في IndexedDB');
+    } catch (err) {
+      showToast('error', 'تعذر إنشاء نقطة الاستعادة');
+    } finally {
+      setIsCreatingSnapshot(false);
+    }
+  };
+
+  const handleRestoreSnapshot = async (snapshot: LocalDBSnapshot) => {
+    const jsonStr = JSON.stringify(snapshot.data);
+    const res = await importJsonBackup(jsonStr);
+    if (res.success) {
+      showToast('success', `تمت استعادة البيانات من نقطة: ${snapshot.note}`);
+    } else {
+      showToast('error', res.error || 'تعذرت استعادة نقطة الحفظ');
+    }
+  };
+
+  const handleDeleteSnapshot = async (id: string) => {
+    await deleteSnapshotFromIndexedDB(id);
+    await loadSnapshots();
+    showToast('info', 'تم حذف نقطة الاستعادة');
   };
 
   return (
@@ -232,7 +296,150 @@ export const DataBackupView: React.FC = () => {
         </div>
       )}
 
-      {/* Database Maintenance and Reset */}
+      {/* Offline Storage Engine & Instant Snapshots */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-5">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <HardDrive className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-extrabold text-slate-900 text-base">
+                طبقة الحفظ المحلي المزدوجة ونقاط الاستعادة (IndexedDB & Snapshots)
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                تأمين بياناتك محلياً ضد فقدان الذاكرة أو تنظيف المتصفح مع إمكانية أخذ لقطات فورية واسترجاعها
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-200">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <span>حفظ مزدوج نشط: IndexedDB + LocalStorage</span>
+          </div>
+        </div>
+
+        {/* Create Snapshot Form */}
+        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 flex flex-col sm:flex-row items-center gap-3">
+          <input
+            type="text"
+            value={snapshotNote}
+            onChange={(e) => setSnapshotNote(e.target.value)}
+            placeholder="ملاحظة نقطة الاستعادة (مثال: قبل تصفية شهر أكتوبر، أو نهاية الفصل)..."
+            className="flex-1 w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
+          />
+          <button
+            onClick={handleCreateSnapshot}
+            disabled={isCreatingSnapshot}
+            className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer whitespace-nowrap"
+          >
+            <Camera className="w-4 h-4" />
+            <span>{isCreatingSnapshot ? 'جارٍ الإنشاء...' : 'حفظ نقطة استعادة جديدة'}</span>
+          </button>
+        </div>
+
+        {/* Snapshots List */}
+        <div>
+          <h4 className="text-xs font-bold text-slate-700 mb-2">نقاط الاستعادة المحفوظة محلياً ({snapshots.length})</h4>
+          {snapshots.length === 0 ? (
+            <div className="p-4 rounded-xl border border-dashed border-slate-200 text-center text-xs text-slate-400">
+              لا توجد نقاط استعادة مخصصة بعد. يمكنك حفظ لقطة أمان لأي مرحلة عمل بنقرة زر أعلاه.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {snapshots.map((s) => (
+                <div
+                  key={s.id}
+                  className="flex items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-xl hover:border-blue-200 transition-colors"
+                >
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-900 truncate">{s.note}</div>
+                    <div className="text-2xs text-slate-500 flex items-center gap-2 mt-0.5">
+                      <span>{new Date(s.timestamp).toLocaleString('ar-DZ')}</span>
+                      <span>•</span>
+                      <span>{s.recordCount} حصة مسجلة</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      onClick={() => handleRestoreSnapshot(s)}
+                      className="px-2.5 py-1 text-2xs font-bold rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition cursor-pointer"
+                    >
+                      استرجاع
+                    </button>
+                    <button
+                      onClick={() => handleDeleteSnapshot(s.id)}
+                      className="p-1 text-slate-400 hover:text-rose-600 transition cursor-pointer"
+                      title="حذف"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Offline Standalone ZIP Package Card */}
+      <div className="bg-gradient-to-br from-indigo-50/70 via-white to-blue-50/50 p-6 rounded-2xl border border-indigo-200/80 shadow-xs">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+              <FolderArchive className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-extrabold text-slate-900 text-base">
+                  حزمة التشغيل دون إنترنت المستقلة للحاسوب (Offline ZIP Bundle)
+                </h3>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-2xs font-extrabold">
+                  جاهز للتحميل
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-1 leading-relaxed max-w-2xl">
+                حزمة كاملة جاهزة للعمل دون اتصال بالإنترنت. تتضمن ملف تشغيل بنقرة واحدة لويندوز (<code className="bg-indigo-100/70 text-indigo-900 px-1 py-0.5 rounded font-mono text-2xs">تشغيل-البرنامج.bat</code>) مع خادم محلي آمن مدمج عبر PowerShell، وسكربت لماك ولينكس، ودليل تشغيل عربي مبسط.
+              </p>
+            </div>
+          </div>
+
+          <a
+            href="/tadween-offline-package.zip"
+            download="tadween-teaching-sessions-offline.zip"
+            className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer shrink-0"
+          >
+            <Download className="w-4 h-4" />
+            <span>تحميل حزمة ZIP للحاسوب (350 KB)</span>
+          </a>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4 pt-4 border-t border-indigo-100 text-xs">
+          <div className="flex items-start gap-2.5 bg-white/80 p-3 rounded-xl border border-indigo-100/60">
+            <Laptop className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-slate-900">تشغيل ويندوز الفوري</div>
+              <div className="text-2xs text-slate-500 mt-0.5">فك الضغط واضغط مرتين على <span className="font-semibold text-slate-700">تشغيل-البرنامج.bat</span> دون تثبيت أي برامج مسبقة.</div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5 bg-white/80 p-3 rounded-xl border border-indigo-100/60">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-slate-900">تثبيت PWA الدائم</div>
+              <div className="text-2xs text-slate-500 mt-0.5">اضغط على زر «تثبيت التطبيق» في الشريط العلوي لتثبيته كبرنامج مستقل على سطح المكتب.</div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5 bg-white/80 p-3 rounded-xl border border-indigo-100/60">
+            <Smartphone className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-slate-900">تطبيق أندرويد والهاتف</div>
+              <div className="text-2xs text-slate-500 mt-0.5">ثبته من متصفح الهاتف عبر «إضافة إلى الشاشة الرئيسية»، ومشروع أندرويد الأصلي متاح للبناء.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
         <h3 className="font-bold text-slate-900 text-sm mb-3">إجراءات الصيانة وإعادة التهيئة</h3>
         <div className="flex flex-wrap items-center gap-3">

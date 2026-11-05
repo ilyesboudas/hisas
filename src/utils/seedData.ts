@@ -555,6 +555,32 @@ export function getInitialDemoDatabase(): AppDatabaseSchema {
     dailyRecords,
     weeks: [pastWeek, currentWeek],
     liquidations: [],
+    trainingsAssignments: [
+      {
+        id: 'train_demo_1',
+        type: 'training',
+        title: 'ندوة بيداغوجية حول المناهج الحديثة',
+        date: '2026-10-05',
+        durationMinutes: 120, // 2 hours
+        notes: 'مقر مفتشية التعليم، مناقشة طرائق التدريس بالمقاربة بالكفاءات.',
+        status: 'completed',
+        academicYear: '2026-2027',
+        createdAt: '2026-10-05T12:00:00Z',
+        updatedAt: '2026-10-05T12:00:00Z',
+      },
+      {
+        id: 'train_demo_2',
+        type: 'assignment',
+        title: 'عضوية لجنة إعداد الامتحانات الاستدراكية',
+        date: '2026-10-12',
+        durationMinutes: 90, // 1h 30m
+        notes: 'تكليف وزاري/إداري بتنسيق مواضيع الرياضيات وتوزيع المهام.',
+        status: 'completed',
+        academicYear: '2026-2027',
+        createdAt: '2026-10-12T14:00:00Z',
+        updatedAt: '2026-10-12T14:00:00Z',
+      },
+    ],
     auditLogs: [
       {
         id: 'audit_init',
@@ -562,7 +588,7 @@ export function getInitialDemoDatabase(): AppDatabaseSchema {
         eventType: 'create',
         entity: 'system',
         entityId: 'init',
-        details: 'تهيئة النظام ببيانات الجدول الأساسي وحصص الدعم.',
+        details: 'تهيئة النظام ببيانات الجدول الأساسي وحصص الدعم والتكوينات والتكليفات.',
       },
     ],
   };

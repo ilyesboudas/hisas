@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">تدوين حصص التدريس</string>
+    <string name="title_activity_main">تدوين حصص التدريس</string>
+    <string name="package_name">com.tadween.hisas</string>
+    <string name="custom_url_scheme">com.tadween.hisas</string>
+</resources>
